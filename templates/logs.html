@@ -1,0 +1,18 @@
+{% extends 'base.html' %} {# Inherits structure from base.html #}
+
+{% block title %}Activity Logs - Zero Trust AI{% endblock %}
+
+{% block content %}
+  <h2 class="mb-3">Activity Logs</h2>
+  <p>Displaying content from <code>{{ log_file_path }}</code> (Admin view)</p>
+  <div class="card shadow-sm">
+    <div class="card-header">
+      Log Entries
+    </div>
+    <div class="card-body">
+      {# Use <pre> for preformatted text, style for wrapping #}
+      <pre style="white-space: pre-wrap; word-wrap: break-word; max-height: 600px; overflow-y: auto; border: 1px solid #eee; padding: 10px;">{{ log_content }}</pre>
+    </div>
+  </div>
+  <a href="{{ url_for('index') }}" class="btn btn-secondary mt-3">Back to Home</a>
+{% endblock %}

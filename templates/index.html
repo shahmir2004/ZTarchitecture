@@ -1,0 +1,58 @@
+{% extends 'base.html' %} {# Inherits structure from base.html #}
+
+{% block title %}Home - Zero Trust AI{% endblock %}
+
+{% block content %}
+  {# Check if user is loaded via session #}
+  {% if g.user %}
+      {# Welcome Header #}
+      <div class="p-3 mb-4 bg-body-tertiary rounded-3"> {# Bootstrap jumbotron-like style #}
+        <div class="container-fluid py-3">
+          <h1 class="display-5 fw-bold">MNIST Digit Predictor</h1>
+          <p class="col-md-8 fs-4">Welcome, {{ g.user.user_id }}! Use the form below to predict handwritten digits.</p>
+        </div>
+      </div>
+
+      {# Prediction Form Section (Only if role allows) #}
+      {% if g.user['role'] in ['predictor', 'admin'] %}
+        <div class="card shadow-sm mb-4">
+          <div class="card-header">
+            <h5>Make a Prediction</h5>
+          </div>
+          <div class="card-body">
+            <p class="card-text">Upload an image file (28x28 grayscale preferred).</p>
+            <form method="post" enctype="multipart/form-data" action="{{ url_for('predict_image') }}">
+              <div class="mb-3">
+                <label for="imagefile" class="form-label">Image File:</label>
+                <input class="form-control" type="file" id="imagefile" name="imagefile" accept="image/*" required>
+              </div>
+              <button type="submit" class="btn btn-success">Predict Digit</button>
+            </form>
+          </div>
+        </div>
+      {% else %}
+        <div class="alert alert-warning" role="alert">
+          Your role ({{ g.user['role'] }}) does not have permission to make predictions.
+        </div>
+      {% endif %}
+
+      {# Prediction Result Section (Only if prediction data exists) #}
+      {% if prediction %}
+        <div class="card shadow-sm">
+          <div class="card-header">
+            <h5>Prediction Result</h5>
+          </div>
+          <div class="card-body">
+            <p class="card-text fs-4">Predicted Digit: <span class="fw-bold text-primary">{{ prediction.predicted_class }}</span></p>
+            <p class="card-text">Confidence: <span class="badge text-bg-info">{{ "%.4f"|format(prediction.confidence) }}</span></p>
+            {# Optional: Display uploaded image - would require saving file in routes #}
+          </div>
+        </div>
+      {% endif %}
+
+  {# If user is somehow not logged in (should be handled by @login_required) #}
+  {% else %}
+      <p>Please <a href="{{ url_for('login') }}">login</a> to use the predictor.</p>
+  {% endif %}
+
+{% endblock %}
