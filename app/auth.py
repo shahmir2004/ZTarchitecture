@@ -20,8 +20,7 @@ except ImportError as e:
 logger = logging.getLogger(__name__)
 
 # --- Simulated User Store ---
-# Replace example hashes with ones you generate for your chosen passwords
-# python -c "from werkzeug.security import generate_password_hash; print(generate_password_hash('YourSecurePassword'))"
+
 USERS = {
     "predictor01": {
         "hash": "scrypt:32768:8:1$YJWVy9xPtmEBtWwi$8f0feeb7d0ffed7834fc6f441cb92ff87114f8002ee2dbf83961ef15f63d5685daff0a1e6ff902ee4e37c2bec7c44c23a2f8d2cf0bb1f9a7c3e1e5173a9b9871", # Password was PredictPass123
@@ -44,10 +43,19 @@ ACTIVE_TOKENS = {} # Format: { 'token': {'user_id': ..., 'role': ..., 'expires_a
 # --- Functions ---
 def verify_password(username, provided_password):
     """Checks if the provided password matches the stored hash for the user."""
+    event_data = {'username_attempted': username, 'event_type': 'password_verify'}
+    logger.debug("Verifying password", extra=event_data)
     user = USERS.get(username)
-    if user and check_password_hash(user["hash"], provided_password):
-        return True
-    return False
+    if user:
+        stored_hash = user["hash"]
+        # logger.debug(f"Found user. Stored hash starts with: {stored_hash[:20]}...") # Avoid logging hash info
+        is_match = check_password_hash(stored_hash, provided_password)
+        event_data['match_result'] = is_match
+        logger.debug("Password match result calculated", extra=event_data)
+        return is_match
+    else:
+        logger.warning("User not found in store during password verification", extra=event_data)
+        return False
 
 def get_user_role(username):
     """Retrieves the role for a given username."""
@@ -57,8 +65,10 @@ def get_user_role(username):
 def generate_token(username):
     """Generates a simple unique token and stores it with user info."""
     role = get_user_role(username)
+    event_data = {'user_id': username, 'role': role, 'event_type': 'token_generate'}
     if not role:
-        return None # Should not happen if called after successful login
+        logger.error("Cannot generate token for unknown user/role", extra=event_data)
+        return None
 
     token = str(uuid.uuid4())
     expires_at = time.time() + TOKEN_EXPIRY_DURATION_SECONDS
@@ -67,38 +77,50 @@ def generate_token(username):
         'role': role,
         'expires_at': expires_at
     }
-    logger.info(f"Generated token for user '{username}' (Role: {role}). Expires at {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expires_at))}")
+    expires_at_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expires_at))
+    event_data['expires_at'] = expires_at_str
+    # Avoid logging the token itself unless needed for debugging with care
+    # event_data['token'] = token
+    logger.info("Token generated", extra=event_data)
     return token
 
 def verify_token(token):
     """Checks if a token is valid and not expired. Returns user info or None."""
+    event_data = {'token_provided': token, 'event_type': 'token_verify'}
     if token in ACTIVE_TOKENS:
         token_data = ACTIVE_TOKENS[token]
+        event_data.update({'user_id': token_data.get('user_id'), 'role': token_data.get('role')}) # Add context
         if time.time() < token_data['expires_at']:
-            logger.debug(f"Token verified for user '{token_data['user_id']}' (Role: {token_data['role']})")
+            logger.debug("Token verified", extra=event_data)
             return token_data # Return {'user_id': ..., 'role': ..., 'expires_at': ...}
         else:
-            logger.warning(f"Attempt to use expired token for user '{token_data['user_id']}'")
+            event_data['event_type'] = 'token_expired'
+            logger.warning("Attempt to use expired token", extra=event_data)
             # Clean up expired token
             del ACTIVE_TOKENS[token]
             return None # Expired
-    # logger.debug(f"Invalid or unknown token provided.") # Can be noisy
+    # Log invalid token attempts less verbosely perhaps, or at DEBUG level
+    logger.debug("Invalid or unknown token provided.", extra=event_data)
     return None # Invalid or not found
 
 def invalidate_token(token):
     """Removes a token from the active store (logout)."""
+    event_data = {'token_provided': token, 'event_type': 'token_invalidate'}
     if token in ACTIVE_TOKENS:
         user_id = ACTIVE_TOKENS[token].get('user_id', 'unknown')
+        event_data['user_id'] = user_id
         del ACTIVE_TOKENS[token]
-        logger.info(f"Token invalidated for user '{user_id}' (Logout)")
+        logger.info("Token invalidated (Logout)", extra=event_data)
         return True
+    logger.warning("Attempt to invalidate non-existent token", extra=event_data)
     return False
 
 # --- RBAC Helper ---
 def check_permission(required_role, user_role):
     """Checks if user_role meets the required_role."""
+    # No logging needed here usually, context is in the calling function
     if not user_role:
         return False
     if user_role == 'admin':
-        return True # Admin has all permissions
-    return user_role == required_role # Check if role matches exactly
+        return True
+    return user_role == required_role

@@ -4,7 +4,7 @@ import logging
 from flask import Flask, g, session
 import sys
 from datetime import timedelta
-from python_json_logger import jsonlogger
+from pythonjsonlogger import jsonlogger
 
 # Ensure the main project directory is in the path to import config and utils
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
