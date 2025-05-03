@@ -3,6 +3,8 @@ import os
 import logging
 from flask import Flask, g, session
 import sys
+from datetime import timedelta
+from python_json_logger import jsonlogger
 
 # Ensure the main project directory is in the path to import config and utils
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -36,11 +38,15 @@ def create_app():
     logger.info(f"Flask Template Folder (set explicitly): {app.template_folder}")
         # -----------------------------
     app.config.from_mapping(
+        #defaults we can change these for testing or production
         SECRET_KEY=FLASK_SECRET_KEY, # Crucial for sessions
-        # Add other config defaults here if needed
+        PERMANENT_SESSION_LIFETIME=timedelta(seconds=30)
     )
     # Could also load more config from config.py or instance folder
-
+    @app.before_request
+    def make_session_permanent():
+        # Tells Flask to use the PERMANENT_SESSION_LIFETIME configuration
+        session.permanent = True
     # --- User Loading for Each Request ---
     # This function runs before every request to load user info if logged in
     @app.before_request
