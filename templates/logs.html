@@ -1,18 +1,83 @@
-{% extends 'base.html' %} {# Inherits structure from base.html #}
+{% extends 'base.html' %}
 
-{% block title %}Activity Logs - Zero Trust AI{% endblock %}
+{% block title %}Activity Logs & Analysis - Zero Trust AI{% endblock %}
 
 {% block content %}
-  <h2 class="mb-3">Activity Logs</h2>
-  <p>Displaying content from <code>{{ log_file_path }}</code> (Admin view)</p>
-  <div class="card shadow-sm">
+  <h2 class="mb-3">Activity Logs & Analysis</h2>
+  <p>Displaying summary for the last 60 minutes and recent raw logs from <code>{{ log_file_path }}</code></p>
+
+  {# Display Analysis Summary #}
+  {% if analysis %}
+    <div class="row mb-4">
+      {# Event Counts Card #}
+      <div class="col-md-6 mb-3">
+        <div class="card shadow-sm">
+          <div class="card-header">Event Summary (Last 60 min)</div>
+          <div class="card-body">
+            <p><strong>Total Events Processed:</strong> {{ analysis.total_events }}</p>
+            {% if analysis.event_counts %}
+              <ul class="list-group list-group-flush">
+                {% for event, count in analysis.event_counts.items()|sort %}
+                  <li class="list-group-item d-flex justify-content-between align-items-center">
+                    {{ event }} <span class="badge bg-primary rounded-pill">{{ count }}</span>
+                  </li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              <p class="text-muted">No events found in this period.</p>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+      {# Security Highlights Card #}
+      <div class="col-md-6 mb-3">
+        <div class="card shadow-sm">
+          <div class="card-header">Security Highlights (Last 60 min)</div>
+          <div class="card-body">
+            <h6>Failed Logins:</h6>
+            {% if analysis.failed_logins %}
+              <ul class="list-unstyled">
+              {% for user, count in analysis.failed_logins.items()|sort %}
+                <li><span class="badge bg-danger me-2">{{ count }}</span> {{ user }}</li>
+              {% endfor %}
+              </ul>
+            {% else %}<p class="text-muted small">None detected.</p>{% endif %}
+            <hr>
+            <h6>Permission Denials:</h6>
+            {% if analysis.permission_denials %}
+               <ul class="list-unstyled">
+               {% for denial, count in analysis.permission_denials.items()|sort %}
+                 <li><span class="badge bg-warning text-dark me-2">{{ count }}</span> {{ denial }}</li>
+               {% endfor %}
+               </ul>
+            {% else %}<p class="text-muted small">None detected.</p>{% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {# Display any errors from analysis #}
+    {% if analysis.errors %}
+      <div class="alert alert-danger">
+        <strong>Log Analysis Errors:</strong>
+        <ul>{% for err in analysis.errors %}<li>{{ err }}</li>{% endfor %}</ul>
+      </div>
+    {% endif %}
+  {% else %}
+    <div class="alert alert-warning">Log analysis data is unavailable.</div>
+  {% endif %}
+
+
+  {# Display Raw Log Content #}
+  <div class="card shadow-sm mt-4">
     <div class="card-header">
-      Log Entries
+      Recent Raw Log Entries (Last ~100 lines)
     </div>
     <div class="card-body">
-      {# Use <pre> for preformatted text, style for wrapping #}
-      <pre style="white-space: pre-wrap; word-wrap: break-word; max-height: 600px; overflow-y: auto; border: 1px solid #eee; padding: 10px;">{{ log_content }}</pre>
+      <pre style="white-space: pre-wrap; word-wrap: break-word; max-height: 400px; overflow-y: auto; border: 1px solid #eee; padding: 10px; font-size: 0.85em;">{{ log_content if log_content else 'No log content found or error reading file.' }}</pre>
     </div>
   </div>
+
   <a href="{{ url_for('index') }}" class="btn btn-secondary mt-3">Back to Home</a>
 {% endblock %}
