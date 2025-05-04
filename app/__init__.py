@@ -5,6 +5,7 @@ from flask import Flask, g, session
 import sys
 from datetime import timedelta
 from pythonjsonlogger import jsonlogger
+from flask_mail import Mail
 
 # Ensure the main project directory is in the path to import config and utils
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -12,13 +13,18 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 try:
-    from config import FLASK_SECRET_KEY
+    from config import (FLASK_SECRET_KEY, # <<< Remove ADMIN_OTP if not using static
+                       MAIL_SERVER, MAIL_PORT, MAIL_USE_TLS, MAIL_USE_SSL,
+                       MAIL_USERNAME, MAIL_PASSWORD, MAIL_DEFAULT_SENDER) # <<< Import Mail config
     from .utils import setup_logging
-    from config import LOG_FILE, LOG_LEVEL
-    from .auth import verify_token # <<< Import verify_token
+    from .auth import verify_token
 except ImportError as e:
     print(f"Error importing from config/utils/auth in app/__init__.py: {e}")
     sys.exit(1)
+    
+# --- Initialize Mail Extension --- 
+mail = Mail()
+# --------------------------------
 
 def create_app():
     """Creates and configures the Flask application instance."""
@@ -33,15 +39,22 @@ def create_app():
     logger.info(f"Attempting to set explicit template folder: {template_dir}")
 
     app = Flask(__name__, instance_relative_config=True, template_folder=template_dir) # Enable instance folder if needed
-    # --- Add these debug lines ---
-    logger.info(f"Flask App Root Path: {app.root_path}")
-    logger.info(f"Flask Template Folder (set explicitly): {app.template_folder}")
-        # -----------------------------
     app.config.from_mapping(
         #defaults we can change these for testing or production
         SECRET_KEY=FLASK_SECRET_KEY, # Crucial for sessions
         PERMANENT_SESSION_LIFETIME=timedelta(seconds=30)
     )
+   
+    app.config['MAIL_SERVER'] = MAIL_SERVER
+    app.config['MAIL_PORT'] = int(MAIL_PORT) # Port needs to be integer
+    app.config['MAIL_USE_TLS'] = MAIL_USE_TLS
+    app.config['MAIL_USE_SSL'] = MAIL_USE_SSL
+    app.config['MAIL_USERNAME'] = MAIL_USERNAME
+    app.config['MAIL_PASSWORD'] = MAIL_PASSWORD
+    app.config['MAIL_DEFAULT_SENDER'] = MAIL_DEFAULT_SENDER
+    app.config['MAIL_DEBUG'] = True # <<< Add this
+    mail.init_app(app)
+    logger.info("Flask-Mail initialized.")
     # Could also load more config from config.py or instance folder
     @app.before_request
     def make_session_permanent():

@@ -57,7 +57,6 @@ def setup_logging():
     # Use root logger for initial message, pass data via extra
     logger.info("Logging initialized", extra={'event_type': 'logging_init', 'log_level': LOG_LEVEL, 'log_file': LOG_FILE})
 
-
 # --- File Encryption/Decryption ---
 def encrypt_model_file(source_path=ORIGINAL_MODEL_PATH, dest_path=ENCRYPTED_MODEL_PATH):
     """Encrypts the source file to the destination file."""
@@ -126,9 +125,9 @@ def load_keras_model_from_bytes(model_bytes):
         # Clean up the temporary file
         try:
             os.remove(TEMP_DECRYPTED_PATH)
-            logger.debug(f"Removed temporary model file", extra=event_data)
+            logger.debug(f"Removed temporary model file", extra={**event_data, 'cleanup_event': 'temp_file_removed'}) # Add sub-event
         except OSError as e:
-            logger.warning(f"Could not remove temporary model file", extra={**event_data, 'error': str(e)})
+            logger.warning(f"Could not remove temporary model file", extra={**event_data, 'cleanup_event': 'temp_file_remove_fail', 'error': str(e)}) # Add sub-event
 
         return model
     except Exception as e:
@@ -149,15 +148,15 @@ if __name__ == "__main__":
     logger.info("Running initial model encryption check", extra={'event_type': 'setup_check'})
     # ...(keep existing __main__ block, its logging calls will now be JSON)...
     if os.path.exists(ORIGINAL_MODEL_PATH):
-        logger.info("Found original model", extra={'path': ORIGINAL_MODEL_PATH})
+        logger.info("Found original model", extra={'path': ORIGINAL_MODEL_PATH, 'event_type': 'setup_check_found_orig'}) # Added type
         if not os.path.exists(ENCRYPTED_MODEL_PATH):
-            logger.warning("Encrypted model not found", extra={'path': ENCRYPTED_MODEL_PATH})
-            logger.info("Attempting initial encryption", extra={'event_type': 'initial_encrypt_start'})
-            if encrypt_model_file():
-                logger.info("Initial model encryption successful.")
+            logger.warning("Encrypted model not found", extra={'path': ENCRYPTED_MODEL_PATH, 'event_type': 'setup_check_enc_missing'}) # Added type
+            logger.info("Attempting initial encryption", extra={'event_type': 'initial_encrypt_start'}) # Added type
+            if encrypt_model_file(): # Uses internal logging with event types
+                logger.info("Initial model encryption successful.", extra={'event_type': 'initial_encrypt_end_success'}) # Added type
             else:
-                logger.error("Initial model encryption FAILED.")
+                logger.error("Initial model encryption FAILED.", extra={'event_type': 'initial_encrypt_end_fail'}) # Added type
         else:
-            logger.info("Encrypted model already exists. Skipping initial encryption.")
+            logger.info("Encrypted model already exists. Skipping initial encryption.", extra={'event_type': 'setup_check_enc_exists'}) # Added type
     else:
-        logger.error("Original model file not found", extra={'path': ORIGINAL_MODEL_PATH, 'event_type': 'setup_fail'})
+        logger.error("Original model file not found", extra={'path': ORIGINAL_MODEL_PATH, 'event_type': 'setup_fail_no_orig'}) # Added type

@@ -9,6 +9,9 @@ import io
 from PIL import Image
 import numpy as np
 from analyze_logs import get_log_summary
+import json
+from flask_mail import Message # <<< Import Message
+from app import mail # <<< Import the mail instance from __init__
 
 # Ensure project root is in path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -17,12 +20,19 @@ if project_root not in sys.path:
 
 # Import project modules
 from .auth import (verify_password, generate_token, verify_token,
-                   check_permission, get_user_role, invalidate_token)
+                   check_permission, get_user_role, invalidate_token,generate_and_store_otp,verify_otp, MFA_OTP_EXPIRY_SECONDS)
 from .utils import decrypt_data, load_keras_model_from_bytes
 try:
     from config import LOG_FILE
 except ImportError:
     LOG_FILE = 'activity.log' # Fallback
+
+try:
+    from config import LOG_FILE, ADMIN_OTP # <<< Add ADMIN_OTP
+except ImportError:
+    # ... (keep fallback for LOG_FILE) ...
+    ADMIN_OTP = None # Set fallback for OTP
+    print("Warning: Could not import ADMIN_OTP from config.")
 
 logger = logging.getLogger(__name__) # Get logger for this module
 
@@ -47,19 +57,21 @@ def login_required(required_role=None):
         def decorated_function(*args, **kwargs):
             event_data = {'path': request.path, 'required_role': required_role}
             if g.user is None:
+                print(f"DEBUG: login_required detected g.user is None for path {request.path}")
                 event_data['event_type'] = 'authn_fail_nouser'
                 logger.warning("Access denied: User not logged in.", extra=event_data)
                 flash('Please log in to access this page.', 'error')
+                
                 return redirect(url_for('login'))
 
             current_user_role = g.user['role']
             current_user_id = g.user['user_id']
             event_data.update({'user_id': current_user_id, 'role': current_user_role})
-            logger.debug("Session check passed", extra=event_data)
+            logger.debug("Session check passed", extra={**event_data, 'event_type':'authn_session_success'})
 
             if required_role:
                 if not check_permission(required_role, current_user_role):
-                    event_data['event_type'] = 'authz_fail_role'
+                    event_data['event_type'] = 'authz_fail_role' # OK
                     logger.warning(f"Permission denied", extra=event_data)
                     flash(f'Your role ({current_user_role}) does not have permission to access this page.', 'error')
                     return redirect(url_for('index'))
@@ -74,48 +86,142 @@ def login_required(required_role=None):
 @login_required()
 def index():
     """Renders the main application page (index.html)."""
-    # Logging done by decorator and before_request handler
+    logger.debug("Rendering index page", extra={'user_id': g.user['user_id'], 'role': g.user['role'], 'event_type': 'render_index'}) # Added
     return render_template('index.html', prediction=None)
 
 @app.route('/login', methods=['GET', 'POST'])
+
 def login():
-    """Handles user login."""
-    if g.user: return redirect(url_for('index')) # Already logged in
+    """Handles Step 1: Username/Password verification. Sends OTP email for admins."""
+    # If user is already logged in via a valid session, redirect them
+    if g.user:
+        return redirect(url_for('index'))
 
     if request.method == 'POST':
         username = request.form.get('username')
         password = request.form.get('password')
+        # OTP is NOT submitted on this initial form anymore
         error = None
-        event_data = {'username_attempted': username, 'event_type': 'login_attempt'}
-        logger.info("Login attempt received", extra=event_data)
+        event_data = {'username_attempted': username, 'event_type': 'login_step1_attempt'}
+        logger.info("Processing login step 1 (Password)", extra=event_data)
 
         if not username or not password:
             error = 'Username and password required.'
             event_data['fail_reason'] = 'missing_credentials'
-            logger.warning("Login failed", extra=event_data)
+            logger.warning("Login Step 1 failed", extra=event_data)
+        # --- Step 1: Verify Password ---
         elif not verify_password(username, password):
             error = 'Invalid username or password.'
             event_data['fail_reason'] = 'invalid_credentials'
-            # Note: verify_password already logs details
-            logger.warning("Login failed", extra=event_data)
+            # verify_password logs internally, log overall failure here
+            logger.warning("Login Step 1 failed", extra=event_data)
         else:
-            token = generate_token(username) # Logs internally
-            if not token:
-                 error = 'Internal server error during login.'
-                 event_data['fail_reason'] = 'token_gen_fail'
-                 logger.error("Login failed", extra=event_data)
+            # --- Password Correct ---
+            user_role = get_user_role(username)
+            event_data['role'] = user_role
+
+            if user_role == 'admin':
+                # --- Admin Needs MFA Step 2: Generate & Email OTP ---
+                otp = generate_and_store_otp(username) # Generate/store OTP
+                if otp:
+                    # --- Attempt to Send Email ---
+                    try:
+                        admin_email = username # Assuming username is the email
+                        if not admin_email or '@' not in admin_email: # Basic validation
+                             raise ValueError("Admin username is not a valid email format for sending OTP.")
+
+                        msg_subject = "Your Zero Trust AI Login OTP"
+                        msg_body = f"Your One-Time Password for Zero Trust AI is: {otp}\n\nIt will expire in {MFA_OTP_EXPIRY_SECONDS // 60} minutes."
+                        msg = Message(subject=msg_subject, recipients=[admin_email], body=msg_body)
+
+                        mail.send(msg) # Send the email using Flask-Mail
+
+                        event_data['recipient'] = admin_email
+                        logger.info("MFA OTP email sent successfully.", extra={**event_data, 'event_type': 'mfa_email_sent'})
+                        # --- Render the MFA verification page ---
+                        # User needs to check their email and enter the code on this page
+                        return render_template('mfa_verify.html', username=username) # Pass username to keep track
+
+                    except Exception as e:
+                        # Handle email sending failure
+                        error = "MFA Error: Could not send OTP code via email. Please check server configuration or contact support."
+                        event_data['fail_reason'] = 'mfa_email_fail'
+                        event_data['error'] = str(e)
+                        logger.error(f"Failed to send MFA email", extra=event_data, exc_info=True)
+                        # Don't proceed to MFA page if email failed
+                else:
+                    # Handle OTP generation failure
+                    error = "MFA Error: Could not initiate MFA process."
+                    event_data['fail_reason'] = 'mfa_otp_gen_fail'
+                    logger.error("Failed to generate OTP for admin.", extra=event_data)
             else:
-                 session.clear()
-                 session['user_token'] = token
-                 event_data['event_type'] = 'login_success'
-                 # Don't log token itself
-                 logger.info("Login successful, session created", extra={'user_id': username, 'event_type': 'login_success'})
-                 flash('Login successful!', 'success')
-                 return redirect(url_for('index'))
+                # --- Non-Admin Login Success (No MFA Needed) ---
+                token = generate_token(username) # Regular token generation
+                if not token:
+                    error = 'Internal server error during login.'
+                    event_data['fail_reason'] = 'token_gen_fail_non_admin'
+                    logger.error("Login failed: Token generation failure", extra=event_data)
+                else:
+                    session.clear()
+                    session['user_token'] = token
+                    logger.info("Login successful (non-admin)", extra={'user_id': username, 'role': user_role, 'event_type': 'login_success'})
+                    flash('Login successful!', 'success')
+                    return redirect(url_for('index'))
 
-        flash(error, 'error')
+        # --- If any error occurred during POST processing ---
+        if error:
+             flash(error, 'error')
+             # Log general failure if not specifically logged above
+             if 'fail_reason' not in event_data: event_data['fail_reason'] = 'unknown_step1_fail'
+             logger.warning("Login Step 1 form processing failed overall", extra={**event_data, 'error_msg': error, 'event_type': 'login_step1_form_fail'})
 
+
+    # --- Render login page on GET or if POST had errors ---
+    logger.debug("Rendering login page", extra={'event_type': 'render_login_page'})
     return render_template('login.html')
+
+
+# --- Keep the /verify-mfa route exactly as it was before ---
+# It handles the submission from mfa_verify.html
+@app.route('/verify-mfa', methods=['POST'])
+def verify_mfa():
+    """Handles Step 2: MFA OTP Verification from form submission."""
+    if g.user: return redirect(url_for('index')) # Should not happen if logout occurs on failure
+
+    username = request.form.get('username')
+    otp_attempt = request.form.get('otp')
+    event_data = {'username_attempted': username, 'event_type': 'login_step2_mfa_attempt'}
+    logger.info("Processing MFA Step 2 (OTP Verification)", extra=event_data)
+
+    if not username or not otp_attempt:
+        flash("MFA Error: Missing username or OTP code.", 'error')
+        event_data['fail_reason'] = 'missing_mfa_data'
+        logger.warning("MFA verification failed", extra=event_data)
+        return redirect(url_for('login')) # Go back to start
+
+    # --- Verify the OTP using the function from auth.py ---
+    if verify_otp(username, otp_attempt): # verify_otp logs internally
+        # --- MFA Correct ---
+        user_role = get_user_role(username) # Should be 'admin'
+        token = generate_token(username) # Logs internally
+        if not token:
+            flash('MFA Error: Internal server error after MFA.', 'error')
+            event_data['fail_reason'] = 'mfa_token_gen_fail'
+            logger.error("Token generation failed after successful MFA.", extra=event_data)
+            return redirect(url_for('login'))
+        else:
+            session.clear()
+            session['user_token'] = token
+            logger.info("MFA Login successful", extra={'user_id': username, 'role': user_role, 'event_type': 'login_success_mfa'})
+            flash('Login successful!', 'success')
+            return redirect(url_for('index'))
+    else:
+        # --- MFA Incorrect or Expired ---
+        flash('Invalid or expired One-Time Password. Please try logging in again.', 'error')
+        # verify_otp logs failure reason internally
+        logger.warning("MFA verification failed.", extra=event_data)
+        # Redirect back to the main login page to restart the whole process
+        return redirect(url_for('login'))
 
 @app.route('/logout')
 @login_required()
@@ -200,44 +306,68 @@ def predict_image():
 @app.route('/logs')
 @login_required(required_role='admin')
 def view_logs():
-    """Displays log analysis summary and raw log content to admin users."""
+    """Displays log analysis summary, charts, and raw log content."""
     user_id = g.user['user_id']
     event_data = {'user_id': user_id, 'role': g.user['role'], 'event_type': 'log_view_request'}
     logger.info("Log view request", extra=event_data)
     log_content = ""
     analysis_summary = None
     log_read_error = None
+    chart_data = {} # <<< Initialize dict for chart data
 
     try:
-        # Perform log analysis (e.g., last 60 minutes)
+        # Perform log analysis
         analysis_summary = get_log_summary(log_path=LOG_FILE, time_window_minutes=60)
 
-        # Read raw log content (potentially limit lines for display)
+        # --- Prepare data for Chart.js --- <<< ADD THIS BLOCK <<<
+        if analysis_summary and analysis_summary.get('event_counts'):
+            # Sort by count descending for better chart display
+            sorted_events = sorted(analysis_summary['event_counts'].items(), key=lambda item: item[1], reverse=True)
+            chart_data['eventCounts'] = {
+                'labels': [item[0] for item in sorted_events],
+                'data': [item[1] for item in sorted_events]
+            }
+
+        if analysis_summary and analysis_summary.get('prediction_outcomes'):
+             # Sort outcomes (optional, might want specific order)
+             sorted_predictions = sorted(analysis_summary['prediction_outcomes'].items(), key=lambda item: item[0])
+             chart_data['predictionOutcomes'] = {
+                 'labels': [item[0] for item in sorted_predictions],
+                 'data': [item[1] for item in sorted_predictions]
+             }
+        # Add more chart data preparation here if needed (e.g., failed logins)
+        # ------------------------------------
+
+        # Read raw log content (limit lines)
         with open(LOG_FILE, 'r') as f:
-            # Example: Read last 100 lines - adjust as needed
             lines = f.readlines()
-            log_content = "".join(lines[-100:]) # Get last 100 lines
-            # Or simply: log_content = f.read() # If file is small
+            log_content = "".join(lines[-100:]) # Last 100 lines
 
     except FileNotFoundError:
         log_read_error = f"Log file not found at {LOG_FILE}"
+        event_data['event_type'] = 'log_view_fail' # OK
+        event_data['error'] = 'FileNotFound'
         logger.error(log_read_error, extra=event_data)
         flash(log_read_error, 'error')
-        # analysis_summary might still have the error message from get_log_summary
         if analysis_summary and not analysis_summary.get('errors'):
-             analysis_summary['errors'] = [log_read_error] # Ensure error is reflected
+            analysis_summary['errors'] = [log_read_error]
     except Exception as e:
-        log_read_error = f"Error reading log file: {e}"
-        logger.error(log_read_error, extra=event_data, exc_info=True)
-        flash('Error reading log file.', 'error')
+        log_read_error = f"Error reading log file or preparing chart data: {e}"
+        event_data['event_type'] = 'log_view_fail' # OK
+        event_data['error'] = str(e)
+        logger.error(f"Error reading log file for admin view", extra=event_data, exc_info=True) # OK
+        flash('Error reading log file or preparing analysis.', 'error')
         if analysis_summary and not analysis_summary.get('errors'):
-             analysis_summary['errors'] = [log_read_error]
+            analysis_summary['errors'] = [log_read_error]
 
-    # Render the template, passing summary, raw content, and file path
+    # Render template, passing analysis, logs, and chart data (as JSON string)
     return render_template('logs.html',
                            analysis=analysis_summary,
                            log_content=log_content,
-                           log_file_path=LOG_FILE)
+                           log_file_path=LOG_FILE,
+                           # Safely embed chart data as JSON into the HTML/JS
+                           chart_data_json=json.dumps(chart_data) # <<< Pass chart data as JSON
+                          )
 
 # === Commented out API Endpoints ===
 # ... (keep them commented out or remove) ...
